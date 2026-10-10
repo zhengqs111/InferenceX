@@ -1,0 +1,32 @@
+# Existing service only; matches the linked Ascend V4.1 A3 1P1D tutorial.
+# https://docs.vllm.ai/projects/ascend/zh-cn/latest/tutorials/models/DeepSeek-V4.1-Flash.html
+# num-worker counts DP engines, NOT physical nodes: P=4*TP4, D=8*TP2.
+# Each side has 16 logical devices (8 physical NPUs in the tutorial).
+# EP spans DP*TP=16 on each side. Aggregation counts logical devices.
+existing-service:
+  image: quay.io/ascend/vllm-ascend:deepseek-v4.1-flash-a3
+  model: dsv41
+  model-prefix: dsv4
+  runner: ascend-a3-1p1d-logical-devices
+  precision: w8a8
+  framework: vllm-ascend
+  multinode: true
+  disagg: true
+  kv-p2p-transfer: MooncakeHybridConnector
+  scenarios:
+    fixed-seq-len:
+      - isl: 1024
+        osl: 1024
+        search-space:
+          # DSpark is recorded in the schema's generic draft_model category.
+          - spec-decoding: draft_model
+            prefill: {num-worker: 4, tp: 4, pp: 1, ep: 16, dp-attn: true}
+            decode: {num-worker: 8, tp: 2, pp: 1, ep: 16, dp-attn: true}
+            conc-list: [1, 2, 5]
+      - isl: 8192
+        osl: 1024
+        search-space:
+          - spec-decoding: draft_model
+            prefill: {num-worker: 4, tp: 4, pp: 1, ep: 16, dp-attn: true}
+            decode: {num-worker: 8, tp: 2, pp: 1, ep: 16, dp-attn: true}
+            conc-list: [1, 2, 5]
