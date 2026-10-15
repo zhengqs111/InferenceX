@@ -1,73 +1,85 @@
-# DeepSeek-V4.1-Flash A3 1P1D 压测
+# 已有服务压测与 Profile
 
 [English](README.md) | **中文**
 
-两个脚本调用 `utils/manual_benchmark_existing_service.py`，仅测试已部署的服务，不启动模型。
+在 Linux 压测机或容器的仓库根目录执行，模型服务需提前启动。
 
-## 部署与配置对应
+| 脚本 | 用途 |
+|---|---|
+| `dump.sh` | 按并发档位回放数据，统计吞吐、TTFT 等指标 |
+| `profile.py` | 按指定并发持续循环发送原始数据；Profile 由你手动控制 |
 
-配置依据：[vLLM Ascend 部署文档第 5.2 节](https://docs.vllm.ai/projects/ascend/zh-cn/latest/tutorials/models/DeepSeek-V4.1-Flash.html)。以下参数假设实际部署与该示例一致；若部署有改动，请同步修改 YAML 的镜像、精度和拓扑。
+## dump.sh：回放并统计
 
-| 项目 | P 侧 | D 侧 |
-|---|---|---|
-| 物理服务器数 | 1 | 1 |
-| DP 引擎数 / `num-worker` | 4 | 8 |
-| 每个引擎的 `tp` | 4 | 2 |
-| `ep` | 16 | 16 |
-| `dp-attn` | true | true |
-| 逻辑设备数 | 16 | 16 |
-
-EP 按 DP×TP 计算，见 [vLLM EP 文档](https://docs.vllm.ai/en/latest/serving/expert_parallel_deployment/)。`existing-service.yaml` 使用 W8A8、MooncakeHybridConnector。当前 schema 没有 dspark 枚举，因此将其记为通用 `spec-decoding: draft_model`；实际 DSpark 参数由服务端控制。
-
-**1P1D 指物理节点；结果中的 `4P/8D` 指 DP 引擎，不是 12 台机器。** 文档每台 A3 是 8 个物理 NPU、暴露 16 个逻辑设备。本配置自动统计 P=16、D=16，`/GPU` 字段实际按逻辑设备归一化：总吞吐量除以 32，输出吞吐量除以 16，不是每物理 NPU 性能。
-
-## 配置并运行 random
-
-在 Linux、仓库根目录执行。建议使用部署所用的 Python 环境：必须有支持 `deepseek_v41` 的 vLLM，以及 `pydantic>=2 PyYAML aiohttp numpy tqdm transformers huggingface_hub` 等客户端依赖。random 在客户端加载分词器，不加载模型权重。
+使用已有压测环境，客户端依赖包括 `pydantic>=2 PyYAML aiohttp numpy tqdm transformers huggingface_hub`。
 
 ```bash
-export BASE_URL="http://你的Proxy_IP:端口"  # 不带 /v1，不要填单个 P/D 引擎端口
-export MODEL="dsv41"                    # 对应 --served-model-name
-export MODEL_PATH="/你的模型目录"        # 客户端可访问，含 V4.1 配套 tokenizer 文件
-
-# 服务开启鉴权时才需要设置；未开启时不要保留其他服务的旧 key
-# read -rsp 'API key: ' OPENAI_API_KEY; export OPENAI_API_KEY
-
-bash benchmarks/manual/random.sh
-```
-
-也可直接修改 `random.sh` 开头对应变量。`TOKENIZER` 默认等于 `MODEL_PATH`，分词器单独存放时用 `export TOKENIZER=/分词器目录`。文档服务名为 `dsv41`；若部署时改过，填写实际名称。
-
-脚本中其余参数：
-
-- `SEQ_LENS=1k1k`：输入目标 1024、输出上限 1024；改为 `8k1k` 则为 8192/1024。服务端聊天封装可能增加实际输入 token。
-- `CONCURRENCIES=(1 2 5)`：每档同时在途请求数上限；新增档位也要更新 YAML 两处 `conc-list`。
-- `NUM_PROMPTS=10`：每档 10 条正式请求；`NUM_WARMUPS=1`：额外 1 条预热。这是小规模测试，不能代表服务的饱和吞吐量。
-- `REQUEST_RATE=inf`：不额外限速；`COOLDOWN_SECONDS=0`：默认不等待，有限流时自行增加。
-
-仅检查命令、不调用服务：
-
-```bash
-bash benchmarks/manual/random.sh --skip-health-check --dry-run
-```
-
-## dump
-
-沿用 BASE_URL、MODEL；不需要本地 tokenizer。JSONL 每行一个请求体（见 `requests.example.jsonl`），包含 `messages` 和 `stream_options.include_usage=true`；去掉日志外壳及冲突的 `max_completion_tokens`。每档回放所有有效行，10 条请求就准备 10 行；默认只有 2 条示例。
-
-```bash
-export INPUT="/你的数据/requests.jsonl"
+export BASE_URL="http://你的服务或Proxy_IP:端口"  # 不带 /v1
+export MODEL="glm53"                          # --served-model-name
+export INPUT="$PWD/benchmarks/manual/requests-16k.jsonl"
+export SEQ_LENS="16k1k"
 bash benchmarks/manual/dump.sh
 ```
 
-dump 的输入取文件实际内容，输出上限取 SEQ_LENS 对应的 OSL。两个脚本依次运行。
+- 并发：修改脚本开头的 `CONCURRENCIES=(1 2 5)`，对应档位必须在 YAML 的 `conc-list` 中。
+- 每档回放文件一遍，另加预热；一行数据只正式发送一次。`--num-prompts` 不增加 dump 回放次数。
+- `SEQ_LENS` 选择 YAML 场景；`16k1k` 输出上限为 1024，输入原文不裁剪。
+- `existing-service.yaml` 的模型、精度、P/D 拓扑应与实际服务一致，影响标签和每卡统计，不改变部署。
+- 结果：`manual_results/dump-时间-后缀/`，包含日志、原始 JSON、`agg_*.json` 汇总。
 
-## 结果
+只检查命令、不请求服务：
 
-仓库根目录 `manual_results/random-时间-后缀/` 或 `manual_results/dump-时间-后缀/`：
+```bash
+bash benchmarks/manual/dump.sh --skip-health-check --dry-run
+```
 
-- `random_c1.log` / `dump_c1.log`：日志和自动汇总表，其他档位对应 c2、c5。
-- `manual_*conc1*.json`：原始结果，先看 completed、num_prompts、errors，再看 output_throughput、mean_ttft_ms、mean_e2el_ms。
-- `agg_manual_*conc1*.json`：自动汇总结果，无需另写脚本。
+## profile.py：持续循环压测
 
-dry-run 只有命令日志，不生成统计 JSON。结果目录已被 Git 忽略。
+需要 Python 3.10+ 和 `aiohttp`，不需要 tokenizer 或 YAML：
+
+```bash
+python3 -m pip install aiohttp
+```
+
+修改 `profile.py` 开头的配置：
+
+```python
+BASE_URL = "http://你的Proxy_IP:端口"
+MODEL = "glm53"
+INPUT = Path(__file__).with_name("requests-16k.jsonl")  # 或 Path("/绝对路径/data.jsonl")
+CONCURRENCY = 1
+OUTPUT_TOKENS = 1024
+DURATION_SECONDS = 0  # 持续发送直到 Ctrl+C；例如 60 表示发压 60 秒
+```
+
+单机的 `BASE_URL` 填模型服务地址；PD 填 Proxy 地址。脚本只发送推理请求，不调用 `/start_profile` 或 `/stop_profile`，也没有单独的预热阶段。你可以先运行脚本，待负载稳定后自行开始采集。
+
+```bash
+python3 benchmarks/manual/profile.py --dry-run  # 检查配置和 JSONL，不请求服务
+python3 benchmarks/manual/profile.py            # 持续循环发压，Ctrl+C 停止
+```
+
+一条数据就重复这一条，多条就按顺序循环；**不改原文件，不生成重复数据集**。默认不限时。将 `DURATION_SECONDS` 设为正数时，到时不再发新请求，等待在途请求结束，因此总时长可能超过设置值。
+
+每个并发任务在收到完整响应后立即发下一条，不额外等待，无需设置小于 1ms 的间隔。这不保证实际发送间隔小于 1ms，也不是每毫秒发一条；需要更多在途请求就提高 `CONCURRENCY`。例如并发为 1 时始终串行，为 4 时最多同时 4 条。
+
+Ctrl+C 取消客户端请求并退出；请求失败也会结束本次压测。脚本退出不会停止你手动开启的采集。客户端取消不保证服务端立即停止推理。
+
+终端输出完成数、单请求耗时和服务端 token usage；不生成 dump 的统计汇总。`IGNORE_EOS=True` 让 vLLM 跑到输出上限；需要自然结束则改为 `False`。
+
+## 手动采集参考
+
+采集的启动、停止由你操作，与循环压测脚本独立。
+
+每个需要采集的 vLLM 实例在启动时添加：
+
+```bash
+--profiler-config '{"profiler":"torch","torch_profiler_dir":"/profiles/prefill","torch_profiler_with_stack":false}'
+```
+
+D 节点可用 `/profiles/decode`。停止采集后在对应目录寻找 `trace_view.json`，用 MindStudio Insight 打开。数据位于服务端/容器内，容器可挂载 `/profiles` 方便取出。[官方说明](https://docs.vllm.ai/projects/ascend/en/main/developer_guide/performance_and_debug/service_profiling_guide.html)
+
+- 测完整 Prefill 时使用 `--no-enable-prefix-caching`，避免重复输入命中缓存。
+- `max-model-len` 要容纳实际输入加输出；文件名“16k”不保证分词后恰好 16384 tokens。
+- 并发是客户端在途请求上限，不等于每卡 batch；服务端 `max-num-seqs`、DP 路由也影响实际负载。
+- 鉴权：提前设置 `OPENAI_API_KEY`，脚本将其用于推理请求。

@@ -19,7 +19,8 @@ from validation import (
 
 seq_len_stoi = {
     "1k1k": (1024, 1024),
-    "8k1k": (8192, 1024)
+    "8k1k": (8192, 1024),
+    "16k1k": (16384, 1024),
 }
 
 MIN_EVAL_CONC = 16
