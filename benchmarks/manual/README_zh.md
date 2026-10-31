@@ -27,6 +27,18 @@ bash benchmarks/manual/dump.sh
 - `existing-service.yaml` 的模型、精度、P/D 拓扑应与实际服务一致，影响标签和每卡统计，不改变部署。
 - 结果：`manual_results/dump-时间-后缀/`，包含日志、原始 JSON、`agg_*.json` 汇总。
 
+### 8K 输入 / 200K 输出
+
+`8k200k` 场景配置为 `isl: 8192`、`osl: 200000`（不是 204800）、`conc-list: [128]`。在 `dump.sh` 中设置 `CONCURRENCIES=(128)`、`NUM_WARMUPS=0`，避免正式发压前先等待一条 200K 输出的预热请求完成。然后指定你准备好的数据集：
+
+```bash
+export INPUT="/你的数据集路径/data.jsonl"
+export SEQ_LENS="8k200k"
+bash benchmarks/manual/dump.sh
+```
+
+按上面的示例设置 `BASE_URL` 和 `MODEL`。客户端发送 `max_tokens=200000`，保留原始输入，不会裁剪或补齐到 8192 tokens。若要生成到输出上限，每条 JSONL 请求需包含 `"ignore_eos": true`，并移除其他停止条件。服务端必须支持实际输入长度加 200000 tokens。文件至少需要 128 条有效请求才可能达到 128 并发；dump 不会自动重复数据。新增场景沿用 `8k1k` 的拓扑，请按实际部署修改 P/D 元数据。
+
 只检查命令、不请求服务：
 
 ```bash

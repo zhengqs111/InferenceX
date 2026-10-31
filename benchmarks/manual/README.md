@@ -27,6 +27,18 @@ bash benchmarks/manual/dump.sh
 - Match the model, precision, and P/D topology in `existing-service.yaml` to the deployment. They affect labels and per-device metrics, not the deployed service.
 - Results: `manual_results/dump-time-suffix/`, containing logs, raw JSON, and `agg_*.json` summaries.
 
+### 8K input / 200K output
+
+The `8k200k` scenario sets `isl: 8192`, `osl: 200000` (not 204800), and `conc-list: [128]`. In `dump.sh`, set `CONCURRENCIES=(128)` and `NUM_WARMUPS=0` to avoid waiting for a 200K-token warmup before measured requests start. Then use your prepared dataset:
+
+```bash
+export INPUT="/path/to/your/data.jsonl"
+export SEQ_LENS="8k200k"
+bash benchmarks/manual/dump.sh
+```
+
+Set `BASE_URL` and `MODEL` as above. The client sends `max_tokens=200000` and preserves the original input; it does not truncate or pad prompts to 8192 tokens. To generate to the limit, include `"ignore_eos": true` in each JSONL request and remove other stop conditions. The server must support actual input length plus 200000 tokens. The file needs at least 128 valid requests to reach 128 concurrent requests; dump does not repeat records automatically. The new scenario copies the `8k1k` topology; update its P/D metadata to match your deployment.
+
 Check commands without contacting the service:
 
 ```bash
