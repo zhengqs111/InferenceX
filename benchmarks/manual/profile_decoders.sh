@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
-set -u
+exec python3 - <<'PY'
+import asyncio
+import sys
 
-hosts=(7.150.2.138 7.150.7.109 7.150.4.220 7.150.6.168)
+HOSTS = ("7.150.2.138", "7.150.7.109", "7.150.4.220", "7.150.6.168")
 
-send_all() {
-  local action=$1 i host port
-  local -a args=()
 
-  for ((i = 0; i < 64; i++)); do
-    ((i > 0)) && args+=(--next)
-    host=${hosts[i / 16]}
-    port=$((9100 + i))
-    args+=(--noproxy '*' -fsS --connect-timeout 3 --max-time 15
-           -X POST -o /dev/null "http://${host}:${port}/${action}_profile")
-  done
+async def post(host, port, action):
+    _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=3)
+    try:
+        writer.write(
+            f"POST /{action}_profile HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()  # Only wait until the request is sent; never read the response.
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
-  curl --parallel --parallel-immediate --parallel-max 64 --fail-early "${args[@]}"
-}
 
-failed=0
-send_all start || failed=1
-sleep 0.9
-send_all stop || failed=1
-exit "$failed"
+async def send_all(action):
+    results = await asyncio.gather(
+        *(post(HOSTS[i // 16], 9100 + i, action) for i in range(64)),
+        return_exceptions=True,
+    )
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            print(f"{action}_profile {HOSTS[i // 16]}:{9100 + i}: {result}", file=sys.stderr)
+    return any(isinstance(result, Exception) for result in results)
+
+
+async def main():
+    start_failed = await send_all("start")
+    await asyncio.sleep(0.9)
+    stop_failed = await send_all("stop")
+    return int(start_failed or stop_failed)
+
+
+sys.exit(asyncio.run(main()))
+PY
