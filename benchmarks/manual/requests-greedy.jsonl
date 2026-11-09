@@ -1,0 +1,1 @@
+{"model":"glm-5","messages":[{"role":"user","content":"请用中文写一段300字左右的文章，主题是秋天的森林。"}],"temperature":0,"max_tokens":1024,"ignore_eos":true,"stream":false}

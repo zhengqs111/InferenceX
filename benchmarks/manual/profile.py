@@ -12,12 +12,13 @@ import time
 import aiohttp
 
 # 只需修改这一区域；BASE_URL 不带 /v1，MODEL 对应 --served-model-name。
-BASE_URL = "http://127.0.0.1:8000"  # PD 部署填写 Proxy 地址。
-MODEL = "glm53"
-INPUT = Path(__file__).with_name("requests-16k.jsonl")
-CONCURRENCY = 1
-OUTPUT_TOKENS = 1024
-DURATION_SECONDS = 0  # 0：持续发送直到 Ctrl+C；正数：到时不再发新请求。
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000")  # PD 部署填写 Proxy 地址。
+MODEL = os.environ.get("MODEL", "glm53")
+INPUT = Path(os.environ.get("INPUT", Path(__file__).with_name("requests-16k.jsonl")))
+CONCURRENCY = int(os.environ.get("CONCURRENCY", "1"))
+OUTPUT_TOKENS = int(os.environ.get("OUTPUT_TOKENS", "1024"))
+DURATION_SECONDS = int(os.environ.get("DURATION_SECONDS", "0"))  # 0：持续发送直到 Ctrl+C。
+STREAM = os.environ.get("STREAM", "1") == "1"  # 0：与非流式 curl 请求保持一致。
 # 每个并发任务收到完整响应后立即发下一条，不额外 sleep。
 IGNORE_EOS = True  # vLLM：忽略 EOS，生成到 OUTPUT_TOKENS 上限。
 REQUEST_TIMEOUT_SECONDS = 600
@@ -41,8 +42,11 @@ def load_payloads():
         if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list) or not payload["messages"]:
             raise ValueError(f"第 {number} 行必须是包含非空 messages 的请求对象")
         payload.pop("max_completion_tokens", None)
-        payload.update(model=MODEL, max_tokens=OUTPUT_TOKENS, stream=True,
-                       stream_options={"include_usage": True}, ignore_eos=IGNORE_EOS)
+        payload.update(model=MODEL, max_tokens=OUTPUT_TOKENS, stream=STREAM, ignore_eos=IGNORE_EOS)
+        if STREAM:
+            payload["stream_options"] = {"include_usage": True}
+        else:
+            payload.pop("stream_options", None)
         payloads.append(payload)
     if not payloads:
         raise ValueError("数据集没有请求")
@@ -56,6 +60,11 @@ async def send_request(session, payload):
     async with session.post(BASE_URL.rstrip("/") + "/v1/chat/completions", json=payload) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP {response.status}: {(await response.text())[:1000]}")
+        if not payload["stream"]:
+            result = await response.json()
+            if "error" in result or not result.get("choices"):
+                raise RuntimeError(f"无有效响应：{str(result)[:1000]}")
+            return time.monotonic() - started, result.get("usage")
         # aiohttp 按行读取 SSE，不把网络分块当成完整 JSON。
         async for line in response.content:
             line = line.decode("utf-8").strip()
@@ -109,7 +118,7 @@ if __name__ == "__main__":
         duration = f"{DURATION_SECONDS}s" if DURATION_SECONDS else "持续发送直到 Ctrl+C"
         print(f"数据集：{INPUT}，{len(payloads)} 条循环回放，不修改文件\n"
               f"服务：{BASE_URL}，模型：{MODEL}，并发：{CONCURRENCY}\n"
-              f"发压时间：{duration}，输出上限：{OUTPUT_TOKENS}\n"
+              f"发压时间：{duration}，输出上限：{OUTPUT_TOKENS}，stream={STREAM}\n"
               "请求完成后立即发送下一条；Profile 由你手动控制。", flush=True)
         if sys.argv[1:] == ["--dry-run"]:
             print("配置与 JSONL 检查通过，未发送请求。")

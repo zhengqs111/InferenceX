@@ -8,6 +8,7 @@ Run from the repository root on a Linux benchmark host or container, with the mo
 |---|---|
 | `dump.sh` | Replay data at selected concurrency levels; measure throughput, TTFT, and other metrics |
 | `profile.py` | Continuously repeat original requests at fixed concurrency; control profiling manually |
+| `profile_ab.sh A\|B` | Repeat greedy or JSON-schema requests against the GLM-5 PD proxy |
 
 ## dump.sh: replay and measure
 
@@ -78,6 +79,30 @@ Each worker sends its next request immediately after receiving the complete resp
 Ctrl+C cancels client requests and exits; request failures also terminate the run. Exiting does not stop manually enabled profiling. Client cancellation does not guarantee immediate server-side inference cancellation.
 
 Terminal output includes completion counts, per-request latency, and server token usage; it does not produce dump's metric summaries. `IGNORE_EOS=True` asks vLLM to generate to the output limit; use `False` for natural completion.
+
+## GLM-5 grammar A/B profiling
+
+```bash
+bash benchmarks/manual/profile_ab.sh A --dry-run
+bash benchmarks/manual/profile_ab.sh B --dry-run
+bash benchmarks/manual/profile_ab.sh A  # Keep running; Ctrl+C exits.
+# Run B separately after finishing A:
+bash benchmarks/manual/profile_ab.sh B
+```
+
+Defaults: `http://7.150.1.10:12901`, model `glm-5`, concurrency 128, unlimited replay. Each JSONL file contains one original request, repeated without generating duplicate data. Both use `temperature=0`, `max_tokens=1024`, `ignore_eos=true`, and `stream=false`; only B includes `response_format.json_schema`. Responses are consumed but not saved. HTTP/API errors stop the run. The prompts differ, so use this experiment to locate execution paths, not to attribute latency differences solely to grammar.
+
+Override concurrency as needed: `CONCURRENCY=64 bash benchmarks/manual/profile_ab.sh A`. The shared client also accepts `BASE_URL`, `MODEL`, `INPUT`, `OUTPUT_TOKENS`, `DURATION_SECONDS`, and `STREAM` through environment variables; the A/B wrapper selects `INPUT` and forces `STREAM=0`. Client concurrency does not guarantee equal load across DP ranks.
+
+Once traffic is flowing, capture only a short window in another terminal:
+
+```bash
+bash benchmarks/manual/start_profile_decoders.sh
+sleep 1
+bash benchmarks/manual/stop_profile_decoders.sh
+```
+
+Check the host/port list in those scripts first. They send control requests without reading HTTP responses; confirm activation in service logs. Alternatively, `bash benchmarks/manual/profile_decoders.sh` captures approximately 0.9 seconds. Trace size depends mainly on the capture window, ranks and profiler options, not how long the client keeps running. Stop profiling before stopping traffic. Before switching A/B, wait for the previous group's server-side requests to finish and retain the profiles separately. Client cancellation does not guarantee immediate server-side cancellation. Inspect the rank that actually receives the requests; it need not be rank30.
 
 ## Manual profiling reference
 

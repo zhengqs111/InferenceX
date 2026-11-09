@@ -8,6 +8,7 @@
 |---|---|
 | `dump.sh` | 按并发档位回放数据，统计吞吐、TTFT 等指标 |
 | `profile.py` | 按指定并发持续循环发送原始数据；Profile 由你手动控制 |
+| `profile_ab.sh A\|B` | 向 GLM-5 PD Proxy 循环发送 greedy 或 JSON schema 请求 |
 
 ## dump.sh：回放并统计
 
@@ -78,6 +79,30 @@ python3 benchmarks/manual/profile.py            # 持续循环发压，Ctrl+C �
 Ctrl+C 取消客户端请求并退出；请求失败也会结束本次压测。脚本退出不会停止你手动开启的采集。客户端取消不保证服务端立即停止推理。
 
 终端输出完成数、单请求耗时和服务端 token usage；不生成 dump 的统计汇总。`IGNORE_EOS=True` 让 vLLM 跑到输出上限；需要自然结束则改为 `False`。
+
+## GLM-5 grammar A/B 采集
+
+```bash
+bash benchmarks/manual/profile_ab.sh A --dry-run
+bash benchmarks/manual/profile_ab.sh B --dry-run
+bash benchmarks/manual/profile_ab.sh A  # 持续发送，Ctrl+C 退出。
+# 完成 A 组后，再单独运行 B 组：
+bash benchmarks/manual/profile_ab.sh B
+```
+
+默认地址 `http://7.150.1.10:12901`，模型 `glm-5`，并发 128，不限时循环回放。每份 JSONL 保存一条原始请求，循环发送，不生成重复数据。两组均为 `temperature=0`、`max_tokens=1024`、`ignore_eos=true`、`stream=false`，仅 B 组带 `response_format.json_schema`。读取响应但不保存正文；HTTP/API 错误会结束压测。两组提示词不同，因此用于定位执行路径，不应仅凭耗时差异归因于 grammar。
+
+调整并发：`CONCURRENCY=64 bash benchmarks/manual/profile_ab.sh A`。共用客户端也支持通过环境变量设置 `BASE_URL`、`MODEL`、`INPUT`、`OUTPUT_TOKENS`、`DURATION_SECONDS`、`STREAM`；A/B 入口会自行选择 `INPUT` 并固定 `STREAM=0`。客户端并发不保证各 DP rank 均匀分配。
+
+请求持续执行后，在另一个终端只采集一个短窗口：
+
+```bash
+bash benchmarks/manual/start_profile_decoders.sh
+sleep 1
+bash benchmarks/manual/stop_profile_decoders.sh
+```
+
+先核对两个脚本中的主机和端口列表。它们只发送控制请求、不读取 HTTP 响应，需要通过服务日志确认采集生效。也可以直接运行 `bash benchmarks/manual/profile_decoders.sh`，采集约 0.9 秒。文件大小主要由采集窗口、rank 数和 profiler 选项决定，不由客户端持续运行时长决定。先停止采集，再停止发压；切换 A/B 前等待前一组服务端在途请求结束，分别保留两组 profile。客户端取消不保证服务端立即取消。检查实际接收请求的 rank，不要求必须是 rank30。
 
 ## 手动采集参考
 
