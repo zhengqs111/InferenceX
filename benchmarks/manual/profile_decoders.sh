@@ -3,7 +3,7 @@ exec python3 - <<'PY'
 import asyncio
 import sys
 
-HOSTS = ("7.150.2.138", "7.150.7.109", "7.150.4.220", "7.150.6.168")
+HOSTS = ("7.150.5.150", "7.150.4.253", "7.150.6.122", "7.150.3.165")
 
 
 async def post(host, port, action):
